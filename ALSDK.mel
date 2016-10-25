@@ -1,0 +1,604 @@
+/*
+    AL Animation Tools
+    v 0.1.2
+    
+    by Anthony Lupow, 2016
+    
+    There are some optimisation issues in the main "copy" function that I still need to fix, (upd: fixed)
+    but c'mon, it's free and stuff. Dont expect it to be perfect. 
+
+    *Like it's a good reason to write bad code...*
+*/
+
+global string $ALSDK_ObjBuffer[];
+
+global proc string[] ALSDK_FindAnimCurves(string $object) {
+    string $conn[] = `listConnections -s true -d false -scn true $object`;
+    string $out[];
+    
+    if (size($conn) <= 0) {
+        return {};
+    }
+    
+    for ($item in $conn) {        
+        //check obj type
+        string $objType = `objectType -isAType "animCurve" $item`;
+        
+        if ($objType == "1") {
+            stringArrayInsertAtIndex(size($out), $out, $item);
+        } else {
+            string $find[] = ALSDK_FindAnimCurves($item);
+            
+            if (size($find) > 0) {
+                appendStringArray($out, $find, size($find));
+            }
+        }
+    }
+    
+    return $out;
+}
+
+global proc string[] ALSDK_FindDrivenObjs(string $driverObj, string $driveAttr) {
+    global string $ALSDK_ObjBuffer[];
+    
+    if (size($ALSDK_ObjBuffer) != 0) {
+        return $ALSDK_ObjBuffer;
+    }
+
+    string $_allObjs[] = `ls -l -v -type "transform"`; //Optimised, I guess
+    
+    
+    string $drivenObjsSrc[];
+
+    for ($v in $_allObjs) {
+        string $dname[] = `setDrivenKeyframe -q -dr $v`;
+        if ($dname[0] != "No drivers.") {
+            for($item in $dname) {
+                if ((match($driverObj, $item) != "") && (match($driveAttr, $item) != "")) {
+                    stringArrayInsertAtIndex(size($drivenObjsSrc), $drivenObjsSrc, $v);
+                }
+            }
+        }
+    }
+    
+//    $ALSDK_ObjBuffer = $drivenObjSrc;
+    
+    return $drivenObjsSrc;
+}
+
+global proc string[] ALSDK_FindDriverParams() {
+    return {};
+}
+
+global proc ALSDK_LoadAttribs() {
+    string $selDriver[] = `textScrollList -q -si srcDriverObj`;
+    
+    if (size($selDriver) <= 0) {
+        return;
+    }
+
+    //Set UI
+    textScrollList -e -ra srcDriverAttribs;
+    
+    string $attrs[] = `listAttr -v -k $selDriver[0]`;
+    for ($item in $attrs) {
+        textScrollList -e -a $item srcDriverAttribs;
+    }
+}
+
+global proc ALSDK_LoadSel() {
+    //Set UI
+    string $sObjs[] = `ls -sl`;
+    
+    if (size($sObjs) <= 0) {
+        return;
+    }
+    
+    textScrollList -e -ra srcDriverObj;
+    textScrollList -e -ra srcDriverAttribs;
+    
+    for ($item in $sObjs) {
+        textScrollList -e -a $item srcDriverObj;
+    }
+}
+
+global proc string ALSDK_GetInvAxis() {
+    $InvX = `radioButton -q -sl invXAxis`;
+    $InvY = `radioButton -q -sl invYAxis`;
+    $InvZ = `radioButton -q -sl invZAxis`;
+    
+    if ($InvX == 1) {
+        return "X";
+    }
+    
+    if ($InvY == 1) {
+        return "Y";
+    }
+    
+    if ($InvZ == 1) {
+        return "Z";
+    }
+    
+    return "notDetermined";
+}
+
+global proc float[] ALSDK_GetKeyframes(string $obj, string $attrib, string $driverAttrib) {
+    string $path = $obj + "." + $attrib;
+
+    string $aCurves[] = ALSDK_FindAnimCurves($path);
+    
+    
+    for ($item in $aCurves) {
+        float $kFrames[] = `keyframe -q -fc $item`;
+        string $parentDriver[] = `listConnections -p true $item`;
+        
+        for ($par in $parentDriver) {
+            if (match($driverAttrib, $par) != "") {
+                print("Found!");
+                return $kFrames;
+            }
+        }
+    }
+    
+    return {};
+}
+
+global proc ALSDK_CopyKeys() {
+    string $targFind = `textField -q -tx targSearch`;
+    string $targReplace = `textField -q -tx targReplace`;
+    string $targFindAttr = `textField -q -tx targSearchAttr`;
+    string $targReplaceAttr = `textField -q -tx targReplaceAttr`;
+    
+    string $srcDriver[] = `textScrollList -q -si srcDriverObj`;
+    string $srcDriverAttribs[] = `textScrollList -q -si srcDriverAttribs`;
+    string $srcDrivenObjs[];
+    string $srcDrivenObjsAttr[];
+    string $tokenBuffer[];
+    
+    string $invAxis = "notDetermined";
+    
+    for ($driverAttrib in $srcDriverAttribs) {
+        
+
+        $srcDrivenObjs = ALSDK_FindDrivenObjs($srcDriver[0], $driverAttrib);
+        
+        //InvAxis
+        $invAxis = ALSDK_GetInvAxis();
+        $invAxisRot = "";
+        if ($invAxis != "notDetermined") {
+            switch ($invAxis) {
+                case "X":
+                    $invAxisRot = "Z";
+                    break;
+                case "Y":
+                    $invAxisRot = "X";
+                    break;
+                case "Z":
+                    $invAxisRot = "X";
+                    break;
+            }
+        }
+        
+        print("Driver: " + $srcDriver[0] + " \nAttrs: ");
+        print($srcDriverAttribs);
+        print("\nObjs: ");
+        print($srcDrivenObjs);
+        
+        //Get objects keyed channels
+        for ($item in $srcDrivenObjs) {
+            string $attrs[] = `setDrivenKeyframe -q -dn $item`;
+            appendStringArray($srcDrivenObjsAttr, $attrs, size($attrs));
+        }
+        
+//        print("\nAttribs:");
+//        print($srcDrivenObjsAttr);
+        
+        
+        int $cChan = 0;
+        int $sChan = size($srcDrivenObjsAttr);
+        string $srcDriven;
+        string $trgDriven;
+        string $trgDriver;
+        
+        float $drivenValArr[];
+        float $driverValArr[];
+        float $driverValArrZ[];
+        
+        //Copy keys
+        while ($cChan < $sChan) {
+            tokenize($srcDrivenObjsAttr[$cChan], ".", $tokenBuffer);
+            
+            $srcDriven = $tokenBuffer[0] + "." + $tokenBuffer[1];
+//            $trgDriven = substitute($targFind, $srcDriven, $targReplace); 
+            $trgDriven = substitute($targFind, $tokenBuffer[0], $targReplace) + "." + substitute($targFindAttr, $tokenBuffer[1], $targReplaceAttr);
+            
+            print("Src: " + $srcDriven + "\n");
+            print("Target: " + $trgDriven + "\n");
+            
+            $srcDriverAttr = $srcDriver[0] + "." + $driverAttrib;
+            $trgDriver = substitute($targFind, $srcDriver[0], $targReplace) + "." + substitute($targFindAttr, $driverAttrib, $targReplaceAttr);
+            
+            print("SrcDriver: " + $srcDriverAttr + "\n");
+            print("TrgDriver: " + $trgDriver + "\n");
+            print("\n--------------\n\n");
+            
+//            $drivenValArr = `keyframe -q -vc $srcDriven`;
+//            $driverValArr = `keyframe -q -fc $srcDriven`;
+//            $driverValArrZ = ALSDK_GetKeyframes($tokenBuffer[0], $tokenBuffer[1], $srcDriverAttr);
+            
+//            if (size($driverValArr) != size($driverValArrZ)) {
+//                $driverValArr = $driverValArrZ;
+//            }
+            
+//            print("Src Keyframes Count: " + size($driverValArr) + "\n");
+
+            $driverValArr = ALSDK_GetKeyframes($tokenBuffer[0], $tokenBuffer[1], $srcDriverAttr);
+            
+            for ($i = 0; $i < size($driverValArr); $i++) {
+//                float $drivenVal = $drivenValArr[$i];
+                float $driverVal = $driverValArr[$i];
+
+//                print("Setting attr " + $srcDriver[0] + "." + $driverAttrib + " -> " + $driverVal);                
+                eval("setAttr "+ $srcDriverAttr + " " + $driverVal);
+                eval("setAttr " + $trgDriver + " " + $driverVal);
+
+
+                float $srcDrivenVal = `getAttr $srcDriven`;
+                print($srcDriven + ": " + $srcDrivenVal + "\n");
+
+                if ($invAxis != "notDetermined") {
+                    if (match("translate" + $invAxis, $trgDriven) != "") {
+//                        $drivenVal *= -1;
+                        $srcDrivenVal *= -1;
+                        print("\nInvert value " + $trgDriven);
+                    }
+                    if (match("rotate" + $invAxisRot, $trgDriven) != "") {
+//                        $drivenVal *= -1;
+                        $srcDrivenVal *= -1;
+                        print("\nInvert value " + $trgDriven);
+                    }
+                }
+                
+//                eval("setAttr "+$trgDriven+" "+$drivenVal);
+                eval("setAttr " + $trgDriven + " " + $srcDrivenVal);
+                eval("setDrivenKeyframe -cd "+$trgDriver+" "+$trgDriven);
+            }
+            
+            $cChan++;
+        }
+        
+    }
+}
+
+global proc string ALM_FindShape(string $obj, string $orig) {
+    string $relat[] = `listRelatives -ni $obj`;
+    
+    for ($item in $relat) {
+        string $objType = `objectType -isAType "shape" $item`;
+        
+        if ($objType == "1") {
+            if ($orig == "1" && match("Orig", $item) != "") {
+                return $item;
+            } else if ($orig == "0" && match("Orig", $item) == "") {
+                return $item;
+            }
+        }
+    }
+    
+    return "";
+}
+
+global proc ALM_ReplaceOrigMesh() {
+    string $sel[] = `ls -sl`;
+    
+    if (size($sel) != 2) {
+        warning("You should select two objects: 1. target 2. source.");
+        return;
+    }
+    
+    string $trgObj = $sel[0]; //Mesh to remove
+    string $srcObj = $sel[1]; //Mesh to copy from
+    
+    string $trgShape = ALM_FindShape($trgObj, "1");
+    string $srcShape = ALM_FindShape($srcObj, "0");
+    
+    //Parent srcShape to trgObj
+    parent -r -s $srcShape $trgObj;
+    string $newShapeName = $trgObj + "ShapeOrigCopied";
+    $srcShape = `rename $srcShape $newShapeName`;
+    
+    string $conn[] = `listConnections -s false -d true -c true -p true $trgShape`;
+    string $connSrc;
+    
+    //Reproduce all connections
+    for ($i = 0; $i < size($conn); $i += 2) {
+        $connSrc = substitute($trgShape, $conn[$i], $srcShape);
+        print("Connecting " + $connSrc + " to " + $conn[$i + 1] + "\n");
+        connectAttr -f ($connSrc) ($conn[$i + 1]);
+    }
+    
+    delete $trgShape;
+}
+
+global string $ALSDK_CtrlPresetsData[]; 
+//Format "ObjName.Attr=>Value;"
+
+global proc string[] ALSDK_CtrlPresetsData_Get() {
+    global string $ALSDK_CtrlPresetsData[];
+    
+    if (!objExists("ALSDK_ControlsState")) {
+        print("Creating node...");
+        createNode -n "ALSDK_ControlsState" "transform";
+        hide "ALSDK_ControlsState";
+        addAttr -dt stringArray -longName "alsdk_states" "ALSDK_ControlsState";
+    }
+    
+    $ALSDK_CtrlPresetsData = `getAttr "ALSDK_ControlsState.alsdk_states"`;
+    
+    return $ALSDK_CtrlPresetsData;
+}
+
+global proc ALSDK_CtrlPresetsData_Set() {
+    global string $ALSDK_CtrlPresetsData[];
+    
+    print($ALSDK_CtrlPresetsData);
+    
+    if(!objExists("ALSDK_ControlsState")) {
+        ALSDK_CtrlPresetsData_Get();
+    }
+    
+    eval("setAttr ALSDK_ControlsState.alsdk_states -type stringArray " + size($ALSDK_CtrlPresetsData) + " \"" + stringArrayToString($ALSDK_CtrlPresetsData, "\" \"") + "\"");
+}
+
+global proc ALCTRL_LoadSelected() {
+    global string $ALSDK_CtrlPresetsData[];
+
+    if (size($ALSDK_CtrlPresetsData) == 0) {
+        ALSDK_CtrlPresetsData_Get();
+    }
+
+    int $selPreset[] = `textScrollList -q -sii ctrlsPresetsList`;
+    
+    print("Loading " + $selPreset[0] + " preset...");
+    
+//    string $attrs[] = ALCTRL_GetData($ALSDK_CtrlPresetsData[($selPreset[0] - 1)]);
+    string $attrs[] = ALCTRL_GetData($selPreset[0] - 1);
+    for ($item in $attrs) {
+        string $attrData[] = ALCTRL_GetAttrs($item);
+        if (size($attrData) != 3) {
+            continue;
+        }
+        
+        if (match("visibility", $attrData[0]) != "") {
+            continue;
+        }
+        
+//        print($attrData);
+//        print("\n");
+        
+//        print("setAttr " + $attrData[0] + " " + $attrData[1]);
+        eval("setAttr " + $attrData[0] + " " + $attrData[1]);
+    }
+}
+
+global proc ALCTRL_SaveSelected() {
+    global string $ALSDK_CtrlPresetsData[];    
+    
+    string $selection[] = `ls -sl -type transform`;
+    string $presetName = `textField -q -tx ctrlPresetName`;
+    
+    if (size($selection) < 2) {
+        SelectHierarchy;
+        $selection = `ls -sl -type transform`;
+        print("Size: " + size($selection));
+    }
+    
+    //Form string obj
+    string $rObj = "";
+    
+    $rObj += $presetName + ";";
+    
+    for ($item in $selection) {
+        string $attrs[] = `listAttr -v -k $item`;
+        
+        for ($attr in $attrs) {
+            string $value;
+            
+            if (catch($value = `getAttr ($item + "." + $attr)`)) {
+//                print ("Cant record data from " + $item + "\n");
+                continue;
+            } else {
+//                $value = `getAttr ($item + "." + $attr)`;
+            }
+            
+            string $type  = `getAttr -type ($item + "." + $attr)`;
+            $rObj += $item + "." + $attr + "=>" + $value + "=>" + $type + ";";
+            
+        }
+    }
+    
+//    ALM_AppendToArray($ALSDK_CtrlPresetsData, $rObj);
+//    print($rObj);
+    stringArrayInsertAtIndex(size($ALSDK_CtrlPresetsData), $ALSDK_CtrlPresetsData, $rObj);
+    ALSDK_CtrlPresetsData_Set();
+    ALCTRL_GetPresets();
+}
+
+global proc ALCTRL_RemoveSelected() {
+    global string $ALSDK_CtrlPresetsData[];
+    int $selInd[] = `textScrollList -q -sii ctrlsPresetsList`;
+
+    if (size($selInd) > 1) {
+        return;
+    }
+    
+    print("Removing at index " + ($selInd[0] - 1));
+    stringArrayRemoveAtIndex($selInd[0] - 1, $ALSDK_CtrlPresetsData);
+    
+    ALSDK_CtrlPresetsData_Set();
+    
+    ALCTRL_GetPresets();
+}
+
+global proc string[] ALCTRL_GetData(int $i) {
+    if ($i > 10000) {
+        return {};
+    }
+    global string $ALSDK_CtrlPresetsData[];
+    string $buffer[];
+    tokenize($ALSDK_CtrlPresetsData[$i], ";", $buffer);
+//    stringArrayRemoveAtIndex(0, $buffer);
+    return $buffer;
+}
+
+global proc string[] ALCTRL_GetAttrs(string $data) {
+    string $buffer[];
+    
+    tokenize($data, "=>", $buffer);
+    return $buffer;
+}
+
+global proc ALCTRL_GetPresets() {
+    global string $ALSDK_CtrlPresetsData[];
+//    string $output[];
+
+    if (size($ALSDK_CtrlPresetsData) == 0) {
+        ALSDK_CtrlPresetsData_Get();
+    }
+
+    textScrollList -e -ra ctrlsPresetsList;
+
+    if (size($ALSDK_CtrlPresetsData) > 0) {
+        for ($i = 0; $i < size($ALSDK_CtrlPresetsData); $i++) {
+            string $item[] = ALCTRL_GetData($i);
+            
+            //set UI
+            textScrollList -e -a $item[0] ctrlsPresetsList;
+        }
+    }
+    
+}
+
+global proc ALCTRL_ResetControls() {
+    string $selected[] = `ls -sl -exactType transform`;
+    
+    if (size($selected) < 2) {
+        SelectHierarchy;
+        $selected = `ls -sl -exactType transform`;
+    }
+    
+    for ($item in $selected) {
+        string $attrs[] = `listAttr -v -k $item`;
+        
+        for ($attr in $attrs) {
+            if (match("visibility", $attr) != "") {
+                continue;
+            }
+            
+            if (match("scale", $attr) != "") {
+                continue;
+            }
+            
+            //Skip scale
+//            string $val = (match("scale", $attr) != "") ? "1" : "0";
+            
+            eval("setAttr " + $item + "." + $attr + " " + "0");
+        }
+    }
+}
+
+global proc ALM_AppendToArray(string $array[], string $item) {
+    stringArrayInsertAtIndex(size($array), $array, $item);
+}
+
+global string $ALSDKVersion = "0.1.2";
+
+global proc ALSDK() {
+    string $ALSDK_winName = "ALSDK_ui";
+    global string $ALSDKVersion;
+    
+	if (`window -exists $ALSDK_winName`) eval("deleteUI -window "+$ALSDK_winName);
+	
+    window -title ("aLpw SDK Animating Tool v" + $ALSDKVersion) -height 400 -width 400 -sizeable true $ALSDK_winName;
+//    string $tabs = `tabLayout -innerMarginWidth 5 -innerMarginHeight 5 tabList`;
+
+    tabLayout tabList;
+    
+    string $tabSDK = `columnLayout -columnWidth 400 -height 480 -rowSpacing 10 -width 400 firstTab`;
+//	columnLayout -columnWidth 400 -height 480 -rowSpacing 10 -width 400;
+		rowLayout -columnWidth2 200 200  -height 200 -numberOfColumns 2 -width 410;
+		    columnLayout -columnWidth 400 -height 200 -width 200;
+		        text -height 20 -label "Driver objects:" -visible on -width 100;
+    			textScrollList -height 200 -width 200 -sc "ALSDK_LoadAttribs()" srcDriverObj;
+    			setParent ..;
+            columnLayout -columnWidth 400 -height 200 -width 200;
+                text -height 20 -label "Attributes:" -visible on -width 100;
+			    textScrollList -height 200 -width 200 -ams true srcDriverAttribs;
+    			setParent ..;
+    		setParent ..;
+		button -height 28 -label "Load Selected" -width 400 -command "ALSDK_LoadSel()";
+		button -height 28 -label "Copy" -width 400 -command "ALSDK_CopyKeys()";
+		columnLayout -columnWidth 400 -height 70 -rowSpacing 10 -width 400;
+			text -enable on -height 17 -label "Object:" -visible on -width 80  -fn "boldLabelFont";
+			rowLayout -columnWidth2 180 180  -height 23 -manage on -numberOfColumns 2 -width 360;
+				rowLayout -columnWidth2 80 100  -height 23 -numberOfColumns 2 -width 180;
+					text -height 17 -label "Search" -width 80;
+					textField -editable on -enable on -height 23 -width 100 targSearch;
+					setParent ..;
+				rowLayout -columnWidth2 80 100  -height 23 -numberOfColumns 2 -width 180;
+					text -height 17 -label "Replace" -width 80;
+					textField -editable on -enable on -height 23 -width 100 targReplace;
+					setParent ..;
+				setParent ..;
+			setParent ..;
+			columnLayout -columnWidth 400 -height 70 -rowSpacing 10 -width 400;
+			text -enable on -height 17 -label "Attribute:" -visible on -width 80  -fn "boldLabelFont";
+			rowLayout -columnWidth2 180 180  -height 23 -manage on -numberOfColumns 2 -width 360;
+				rowLayout -columnWidth2 80 100  -height 23 -numberOfColumns 2 -width 180;
+					text -height 17 -label "Search" -width 80;
+					textField -editable on -enable on -height 23 -width 100 targSearchAttr;
+					setParent ..;
+				rowLayout -columnWidth2 80 100  -height 23 -numberOfColumns 2 -width 180;
+					text -height 17 -label "Replace" -width 80;
+					textField -editable on -enable on -height 23 -width 100 targReplaceAttr;
+					setParent ..;
+				setParent ..;
+			setParent ..;
+		rowLayout -columnWidth2 200 200  -height 20 -numberOfColumns 3 -width 410;
+		    radioCollection;
+		    radioButton -label "X" invXAxis;
+            radioButton -label "Y" invYAxis;
+            radioButton -label "Z" invZAxis;
+		setParent ..;
+		rowLayout -columnWidth2 200 200  -height 20 -numberOfColumns 1 -width 410;
+		    button -label "Replace Orig Shape" -command "ALM_ReplaceOrigMesh()";
+		setParent ..;
+	setParent ..;
+		
+	string $tabControls = `columnLayout -columnWidth 400 -height 100 -width 400 secTab`;
+	    rowLayout -columnWidth2 200 200  -height 200 -numberOfColumns 2 -width 410;
+		    columnLayout -columnWidth 400 -height 200 -width 200;
+		        text -height 20 -label "Saved states:" -visible on -width 100;
+    			textScrollList -height 200 -width 200 -sc "" ctrlsPresetsList;
+    		setParent ..;
+            columnLayout -columnWidth 400 -height 200 -width 200;
+                textField -editable on -enable on -height 23 -width 200 ctrlPresetName;
+			    button -width 200 -label "Save state" -command "ALCTRL_SaveSelected()";
+			    button -width 200 -label "Load state" -command "ALCTRL_LoadSelected()";
+			    button -width 200 -label "Remove state" -command "ALCTRL_RemoveSelected()";
+			    button -width 200 -label "Reset selected controls" -command "ALCTRL_ResetControls()";
+			    text -width 200 alsdkControlsInfo;
+    		setParent ..;
+        setParent ..;
+	setParent ..;
+		
+		
+	tabLayout -e 
+	            -tabLabel $tabSDK "SDK"
+	            -tabLabel $tabControls "Controls" 
+	            tabList;
+
+    showWindow $ALSDK_winName;
+    ALCTRL_GetPresets();
+}
+
