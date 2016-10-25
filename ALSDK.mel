@@ -7,7 +7,11 @@
     There are some optimisation issues in the main "copy" function that I still need to fix, (upd: fixed)
     but c'mon, it's free and stuff. Dont expect it to be perfect. 
 
+<<<<<<< HEAD
     *Like it's a good reason to write bad code...*
+=======
+    *Like it's a real reason to write shitty code...*
+>>>>>>> 628011ace524fbbf0d15838621cd5e8e6b9dd236
 */
 
 global string $ALSDK_ObjBuffer[];
